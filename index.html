@@ -1,458 +1,347 @@
-/**
- * Cloudflare Worker v6 FINAL
- * Tích hợp 5 điểm khác biệt + danh mục thuốc thực tế A20d
- * + Quy trình lãnh morphine tại PK04
- */
-
-// ── Rate limiting ─────────────────────────────────────────────────────────────
-const rateLimitMap = new Map();
-const RATE_LIMIT   = 20;
-const RATE_WINDOW  = 60 * 60 * 1000;
-function checkRateLimit(ip) {
-  const now   = Date.now();
-  const entry = rateLimitMap.get(ip) || { count: 0, resetAt: now + RATE_WINDOW };
-  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + RATE_WINDOW; }
-  entry.count++;
-  rateLimitMap.set(ip, entry);
-  return entry.count <= RATE_LIMIT;
-}
-
-// ── CORS ──────────────────────────────────────────────────────────────────────
-function corsHeaders(origin) {
-  const allowed = [
-    "https://lethuong201193.github.io",
-    "http://localhost:5500",
-    "http://127.0.0.1:5500"
-  ];
-  const originOk = allowed.includes(origin) ? origin : allowed[0];
-  return {
-    "Access-Control-Allow-Origin":  originOk,
-    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-  };
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// DANH MỤC THUỐC THỰC TẾ TẠI KHOA A20d
-// Được kiểm duyệt bởi BS Lê Thanh Thượng, Khoa CSGN A20d, BV Quân y 175
-// ════════════════════════════════════════════════════════════════════════════
-const DRUG_FORMULARY = `
-=== DANH MỤC OPIOID TẠI KHOA A20d — VIỆN UB & YHHN, BV QUÂN Y 175 ===
-
-THUỐC 1: MORPHINE 10mg (dạng tiêm)
-Hoạt chất: Morphine sulfate 10mg/1ml — ống tiêm
-Lưu ý quan trọng: Đây là dạng TIÊM, chỉ dùng tại khoa hoặc do nhân viên y tế thực hiện. KHÔNG được cấp về nhà hoặc cấp ngoại trú. Bệnh nhân/thân nhân KHÔNG tự tiêm tại nhà.
-
-THUỐC 2: MORPHINE SULFATE 30mg (dạng uống)
-Hoạt chất: Morphine sulfate 30mg — viên nhộng
-Cách dùng: Uống nguyên viên, không nghiền, không nhai. Uống với nhiều nước. Đúng giờ theo y lệnh.
-Lưu ý quan trọng tại khoa: Được cấp về tối đa 10 ngày mỗi lần. Phải tái khám đúng hẹn để được cấp tiếp — KHÔNG được tự ý mua thêm ngoài đơn của bác sĩ.
-Tác dụng phụ: Táo bón (gần 100% — luôn cần dùng thuốc nhuận tràng kèm theo ngay từ ngày 1), buồn nôn (thường hết sau 5-7 ngày), buồn ngủ (thường hết sau 2-3 ngày đầu).
-Báo ngay nếu: Thở chậm/khó thở tăng, không thể tỉnh dậy, lú lẫn nặng.
-
-THUỐC 3: TRAMADOL 37.5mg + PARACETAMOL 325mg (dạng uống)
-Hoạt chất: Tramadol HCl 37.5mg + Paracetamol 325mg — viên nén
-Tác dụng: Giảm đau mức vừa, kết hợp 2 cơ chế — opioid nhẹ (tramadol) và hạ sốt giảm đau (paracetamol)
-Cách dùng: Uống no để tránh buồn nôn. Không vượt quá liều y lệnh.
-Tác dụng phụ: Buồn nôn, chóng mặt, táo bón nhẹ.
-Lưu ý: Không dùng cho bệnh nhân có tiền sử co giật. Không uống thêm paracetamol riêng lẻ vì trong viên đã có sẵn.
-
-THUỐC 4 & 5 — FENTANYL PATCH VÀ OXYCODONE:
-Anh bổ sung thông tin khi có — tôi sẽ cập nhật vào đây.
-
-FENTANYL PATCH (miếng dán da — thông tin từ Phụ lục 02 Quy trình BV175):
-Loại: phóng thích 25mcg và 50mcg fentanyl/giờ. Tác dụng 72 giờ liên tục.
-Vị trí dán phù hợp người Việt Nam: vị trí A (lưng trên/bả vai) hoặc C (ngực trên trước cơ ngực lớn). Không dán vị trí B (bụng). Làm sạch da bằng nước trước khi dán, không dùng xà phòng, không cạo lông (chỉ cắt nếu cần).
-Thay miếng: đúng mỗi 72 giờ. Ghi lại ngày giờ bắt đầu dán để theo dõi. Thay đổi vị trí dán mỗi lần, chỉ dán lại vị trí cũ sau 1 tuần.
-KHÔNG được: cắt miếng dán, dùng miếng bị cắt/hỏng, để phần dính dính vào tay. Rửa tay sạch sau khi dán hoặc gỡ miếng dán.
-Khi tháo miếng cũ: gấp gọn bỏ túi đựng rác hoặc bỏ theo đúng quy định, tránh tiếp xúc trực tiếp với da người khác và thú cưng (miếng cũ vẫn còn thuốc).
-Có thể dùng thêm Morphine uống hoặc tiêm để cứu hộ khi đau đột xuất theo hướng dẫn bác sĩ.
-Tác dụng phụ: cơn vật vã nếu dùng không đúng chỉ định, táo bón, ngứa tại chỗ dán.
-KHÔNG dùng hoặc thận trọng: phụ nữ có thai hoặc cho con bú (fentanyl qua nhau thai và sữa mẹ, có thể gây ức chế hô hấp thai nhi/trẻ sơ sinh).
-Nếu bệnh nhân sốt hoặc triệu chứng còn nặng: tư vấn bác sĩ điều trị.
-`;
-
-// ════════════════════════════════════════════════════════════════════════════
-// QUY TRÌNH LÃNH MORPHINE TẠI PK04
-// Nguồn: Tài liệu chính thức Khoa A20d / Viện UB&YHHN / BV Quân y 175
-// ════════════════════════════════════════════════════════════════════════════
-const DISPENSING_PROCESS = `
-=== QUY TRÌNH CẤP PHÁT THUỐC OPIOID — VIỆN UB&YHHN, BV QUÂN Y 175 ===
-(Căn cứ QT-C9-P41 ban hành 25/02/2023, CV 1519/HD-BV)
-
-PHẠM VI ÁP DỤNG:
-Áp dụng cho bệnh nhân tại các Khoa A20.1 (Khám & điều trị ngoại trú), A20.2 (Xạ trị), A20.3 (Hóa trị), A20.4 (Chăm sóc giảm nhẹ) thuộc Viện UB&YHHN và Khoa Dược BV Quân y 175.
-
-HAI ĐỐI TƯỢNG ĐƯỢC CẤP THUỐC:
-1. Bệnh nhân nội trú ra viện — cần tiếp tục điều trị tại nhà (có hoặc không có BHYT)
-2. Bệnh nhân ngoại trú khám tại Phòng khám số 4 / Khoa CSGN (A20.4) — phải có BHYT
-
-LỊCH CẤP THUỐC NGOẠI TRÚ: Chiều thứ Ba và thứ Năm (trừ ngày Lễ, Tết, Thứ Bảy, Chủ nhật)
-
-SỐ NGÀY CẤP TỐI ĐA:
-Bệnh nhân ngoại trú: tối đa 3 đợt liên tiếp, mỗi đợt không quá 10 ngày (ghi rõ ngày bắt đầu và kết thúc)
-Bệnh nhân nội trú ra viện: tối đa 1 đợt, không quá 7 ngày
-
-TRƯỜNG HỢP 1 — BỆNH NHÂN TỰ ĐẾN LÃNH:
-Cần mang: Giấy hẹn tái khám (bản gốc) + CCCD và BHYT (3 bản photo + bản gốc) + Giấy xác nhận y tế địa phương (1 gốc + 2 photo, ghi tên bệnh nhân)
-Nếu đăng ký KCB nơi khác: thêm Giấy chuyển tuyến (3 bản photo)
-
-TRƯỜNG HỢP 2 — NGƯỜI NHÀ ĐI LÃNH THAY (khi bệnh nhân không đến được):
-Cần mang TẤT CẢ giấy tờ trên, THÊM: CCCD của người đi lãnh (3 bản photo + gốc) + Giấy xác nhận y tế địa phương ghi tên NGƯỜI ĐI LÃNH (không phải tên bệnh nhân)
-Bác sĩ sẽ hỏi triệu chứng bệnh nhân qua người nhà hoặc gọi điện trực tiếp cho bệnh nhân trước khi kê đơn
-
-GIẤY XÁC NHẬN Y TẾ ĐỊA PHƯƠNG LÀ GÌ:
-Là "Đơn đề nghị xác nhận người bệnh cần tiếp tục điều trị giảm đau bằng thuốc gây nghiện" do Trạm trưởng Trạm y tế xã/phường/thị trấn nơi bệnh nhân thường trú ký và đóng dấu. Giấy này có hiệu lực 1 đến 3 ngày hành chính (không tính Lễ, Tết, Thứ Bảy, Chủ nhật). Cách xin: mang đơn thuốc cũ + CCCD đến trạm y tế phường/xã, trình bày đang điều trị tại BV Quân y 175.
-
-ĐƠN THUỐC "N" — BỆNH NHÂN CẦN BIẾT:
-Đơn thuốc gây nghiện được in thành 3 liên: Liên 1 giao cho bệnh nhân giữ (cần mang theo khi tái khám), Liên 2 lưu tại khoa chỉ định, Liên 3 lưu tại nơi cấp thuốc. Bệnh nhân phải mang Liên 1 khi tái khám lần tiếp theo.
-
-CAM KẾT KHI NHẬN THUỐC (bắt buộc lần đầu theo TT 52/2017 và TT 26/2025):
-Bệnh nhân/người đại diện ký cam kết: chỉ dùng đúng hướng dẫn, không tìm thuốc từ nguồn khác, nộp lại thuốc thừa khi không dùng hết, không bán/cho/tặng thuốc, chịu trách nhiệm pháp luật nếu vi phạm.
-
-HƯỚNG DẪN PHA MORPHINE UỐNG (từ viên nhộng 30mg):
-Dùng bơm tiêm 10ml x 3 lần = 30ml nước cất (nước đun sôi để nguội), bỏ vỏ nhộng, lấy bột pha vào lọ, lắc đều. 1ml dung dịch = 1mg Morphine sulfate. Bảo quản nhiệt độ phòng, tránh xa tầm tay trẻ em.
-Lịch uống chuẩn (mỗi 4 giờ): 6h - 10h - 14h - 18h - 22h (tối) - 6h sáng hôm sau. Trước khi ngủ có thể uống liều gấp đôi, 8 giờ sau mới lặp lại liều ban ngày (theo chỉ định bác sĩ).
-
-THUỐC THỪA — QUY ĐỊNH TRẢ LẠI:
-Nếu còn thuốc thừa khi không dùng hết, bắt buộc nộp lại cho khoa. Khoa sẽ lập biên bản nhận thuốc, kiểm tra chất lượng và xử lý theo quy định. Không được giữ lại, không được cho người khác, không được vứt bỏ tùy tiện.
-
-MẤT THUỐC — XỬ LÝ:
-Báo ngay với trưởng khoa điều trị. Cần có xác nhận của công an nơi cư trú về việc mất thuốc. Lãnh đạo Viện UB&YHHN xem xét phê duyệt cấp lại. Không được tự ý mua thêm từ nguồn khác.
-
-TÌNH HUỐNG THƯỜNG GẶP:
-
-Hết thuốc trước ngày hẹn: Liên hệ khoa A20d 0828 204 175 ngay. Có thể đến tái khám sớm hơn lịch hẹn nếu hết thuốc. Không tự ý điều chỉnh liều hoặc mua thuốc nơi khác.
-
-Lãnh thuốc đợt 2-3 (khi cầm đơn cũ về): Đến trước 1 đến 3 ngày so với ngày hết thuốc trên đơn. Nếu ngày hết thuốc trùng Lễ, Tết, Thứ Bảy, Chủ nhật thì lãnh vào ngày liền kề trước hoặc sau ngày nghỉ.
-
-Bệnh nhân giai đoạn cuối không đến khám được: Người nhà đến gặp bác sĩ khoa CSGN, bác sĩ sẽ thực hiện công khám từ xa trên hệ thống eHospital và kê đơn. Cần có Giấy xác nhận y tế địa phương (BM-03).
-
-BHYT thanh toán thuốc morphine: Có, nếu có BHYT tại BV Quân y 175 hoặc giấy chuyển tuyến hợp lệ. Bệnh nhân dịch vụ (không BHYT) vẫn được cấp thuốc nhưng tự chi trả.
-`;
-
-// ════════════════════════════════════════════════════════════════════════════
-// LO LẮNG VĂN HÓA VN ĐẶC THÙ
-// ════════════════════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════════════════════
-// BIỂU MẪU — Link tải về
-// ════════════════════════════════════════════════════════════════════════════
-const FORMS_INFO = `
-=== BIỂU MẪU CÓ THỂ TẢI VỀ ===
-(Ban hành kèm theo Quy trình QT-C9-P41, BV Quân y 175, ngày 25/02/2023)
-
-BM-03 — ĐƠN ĐỀ NGHỊ XÁC NHẬN TIẾP TỤC ĐIỀU TRỊ GIẢM ĐAU BẰNG THUỐC GÂY NGHIỆN
-Mục đích: Dùng khi bệnh nhân không thể đến khám trực tiếp — người nhà mang đến Trạm y tế phường/xã xin xác nhận, sau đó đến Khoa CSGN để được kê đơn thuốc.
-Ai cần dùng: Bệnh nhân giai đoạn cuối không đến viện được, hoặc khi cần người nhà đi lãnh thuốc thay.
-Link tải: https://lethuong201193.github.io/opioid-chatbot/BM-03-Don-de-nghi-xac-nhan.docx
-Hướng dẫn sử dụng: Tải về → In ra → Điền tay đầy đủ thông tin → Mang đến Trạm y tế phường/xã xin xác nhận (đóng dấu) → Mang đến Khoa CSGN A20d trong giờ hành chính (thứ Hai đến thứ Sáu).
-Lưu ý: Giấy xác nhận này có hiệu lực 1–3 ngày hành chính (không tính Lễ, Tết, Thứ Bảy, Chủ nhật).
-
-[Các biểu mẫu khác sẽ được bổ sung khi có file chính thức: BM-02 Cam kết sử dụng thuốc gây nghiện]
-
-KHI NÀO CẦN DÙNG BM-03:
-Trường hợp 1: Bệnh nhân quá yếu không đến viện được → người nhà xin BM-03, ra trạm y tế xác nhận, mang đến khoa để bác sĩ kê đơn qua người nhà.
-Trường hợp 2: Cần lãnh thuốc đợt tiếp theo mà bệnh nhân không đi được → tương tự trên.
-Trường hợp 3: Bệnh nhân giai đoạn cuối nằm tại nhà → đây là thủ tục bắt buộc để tiếp tục nhận thuốc.
-`;
-
-const CULTURAL_CONCERNS = `
-=== LO LẮNG ĐẶC THÙ CỦA BỆNH NHÂN/THÂN NHÂN VIỆT NAM ===
-(Tổng hợp từ thực tế lâm sàng tại Khoa A20d)
-
-1. "DÙNG MORPHINE LÀ SẮP CHẾT / MORPHINE RÚT NGẮN TUỔI THỌ"
-Nỗi lo này rất phổ biến và hoàn toàn dễ hiểu. Sự thật:
-Morphine được WHO xếp vào danh mục thuốc thiết yếu cho kiểm soát đau ung thư — không phải thuốc "chỉ dùng khi hấp hối". Nhiều bệnh nhân dùng morphine ổn định nhiều tháng, nhiều năm vẫn sinh hoạt, đi lại bình thường. Nghiên cứu quốc tế cho thấy opioid dùng đúng cách KHÔNG rút ngắn tuổi thọ. Đau không được kiểm soát mới làm suy kiệt nhanh hơn vì ảnh hưởng giấc ngủ, ăn uống và miễn dịch. Bác sĩ chỉ định morphine nghĩa là: đau của bạn cần thuốc đủ mạnh để kiểm soát — không phải báo hiệu tiên lượng xấu hơn.
-
-2. "SỢ NGHIỆN / GIA ĐÌNH PHẢN ĐỐI"
-Nghiện (addiction) là tiếp tục dùng dù gây hại, mất kiểm soát hành vi. Phụ thuộc thể chất (physical dependence) là cơ thể quen thuốc, cần giảm liều từ từ khi ngưng — đây là hiện tượng sinh lý bình thường, xảy ra với nhiều loại thuốc kể cả thuốc huyết áp hay corticoid. Bệnh nhân ung thư dùng đúng y lệnh để giảm đau: nguy cơ nghiện thực sự dưới 1%. Nếu gia đình còn băn khoăn, mời họ đến gặp trực tiếp bác sĩ tại khoa A20d: 0828 204 175 để được giải thích cụ thể.
-
-3. "SỢ BỊ CÔNG AN / VẤN ĐỀ PHÁP LÝ"
-Morphine nằm trong danh mục thuốc gây nghiện được Bộ Y tế VN cho phép dùng trong điều trị y tế theo Thông tư 20/2017/TT-BYT và Thông tư 26/2025/TT-BYT. Bệnh nhân dùng theo đơn của bác sĩ tại cơ sở y tế hợp pháp: hoàn toàn không vi phạm pháp luật. Khi lãnh thuốc, bệnh nhân ký cam kết pháp lý — đây là bảo vệ cho bệnh nhân, không phải thủ tục bất lợi. Khi mang thuốc về nhà: luôn giữ đơn thuốc gốc theo người.
-
-4. "GIA ĐÌNH MUỐN GIẤU BỆNH NHÂN KHÔNG CHO BIẾT ĐANG DÙNG MORPHINE"
-Đây là tình huống nhạy cảm và thường gặp trong văn hóa Việt Nam:
-Về quyền bệnh nhân: người bệnh có quyền được biết về thuốc đang dùng. Về thực tế lâm sàng: bệnh nhân biết mình đang dùng gì sẽ nhận ra tác dụng phụ sớm hơn và báo kịp thời. Gợi ý thực tế: thay vì giấu tên thuốc, gia đình có thể giải thích là "thuốc giảm đau mạnh theo đơn bác sĩ, phải uống đúng giờ". Nếu gia đình lo lắng về tâm lý bệnh nhân: trao đổi trực tiếp với bác sĩ hoặc nhân viên công tác xã hội của khoa.
-`;
-
-// ════════════════════════════════════════════════════════════════════════════
-// PATIENT JOURNEY — 4 giai đoạn
-// ════════════════════════════════════════════════════════════════════════════
-const PATIENT_JOURNEY = `
-=== HÀNH TRÌNH BỆNH NHÂN TẠI KHOA A20d ===
-
-GIAI ĐOẠN 1: MỚI BẮT ĐẦU DÙNG OPIOID LẦN ĐẦU
-Lo lắng thường gặp: Tại sao phải dùng morphine? Có nghiện không? Liều này có đúng không?
-Thông tin ưu tiên: Giải thích lý do dùng, tác dụng phụ tuần đầu cần biết, cam kết an toàn
-Việc cần làm ngay: Uống đúng giờ; dùng thuốc nhuận tràng ngay từ ngày 1; giữ đơn thuốc gốc theo người
-
-GIAI ĐOẠN 2: ĐANG DÙNG VÀ GẶP TÁC DỤNG PHỤ
-Lo lắng thường gặp: Táo bón mấy ngày rồi; buồn nôn quá; ngủ nhiều có sao không?
-Thông tin ưu tiên: Xử trí cụ thể từng tác dụng phụ; phân biệt nhẹ vs cần báo ngay
-Dấu hiệu cần báo ngay khoa: Thở chậm, khó thở tăng; không thể tỉnh dậy; lú lẫn nặng
-
-GIAI ĐOẠN 3: CHUẨN BỊ XUẤT VIỆN / CẤP THUỐC NGOẠI TRÚ
-Lo lắng thường gặp: Về nhà lỡ hết thuốc thì sao? Cần giấy tờ gì? Ai đi lãnh được?
-Thông tin ưu tiên: Lịch lãnh thuốc thứ Ba/Năm tại PK04; danh sách giấy tờ cần thiết; số điện thoại khoa
-Việc cần làm: Chuẩn bị đủ giấy tờ trước ngày hẹn; lưu số 0828 204 175
-
-GIAI ĐOẠN 4: NGƯỜI NHÀ ĐANG CHĂM SÓC TẠI NHÀ
-Lo lắng thường gặp: Ba/Mẹ ngủ nhiều có sao không? Quên cho thuốc thì làm sao? Đau nhiều hơn thì làm gì?
-Thông tin ưu tiên: Dấu hiệu bình thường vs bất thường; xử lý quên liều; khi nào gọi khoa ngay
-Nguyên tắc xử lý quên liều: Nếu quên dưới 2 giờ thì uống ngay; nếu quên hơn 2 giờ thì bỏ qua liều đó, uống liều tiếp theo đúng giờ; không uống gấp đôi
-`;
-
-// ════════════════════════════════════════════════════════════════════════════
-// WHO PRINCIPLES
-// ════════════════════════════════════════════════════════════════════════════
-const WHO_PRINCIPLES = `
-=== NGUYÊN TẮC DÙNG OPIOID THEO WHO ===
-
-WHO Pain Ladder 3 bậc:
-Bậc 1 (đau nhẹ): Paracetamol, NSAIDs
-Bậc 2 (đau vừa): Tramadol, Codeine
-Bậc 3 (đau nặng): Morphine, Oxycodone, Fentanyl
-
-5 nguyên tắc WHO (giải thích đơn giản cho bệnh nhân):
-1. Uống thuốc qua đường miệng khi có thể — ưu tiên hơn tiêm
-2. Uống đúng giờ — không chờ đau mới uống, vì phòng ngừa đau hiệu quả hơn chữa đau
-3. Tăng bậc theo mức độ đau — thuốc mạnh hơn khi cần, không phải khi bệnh nặng hơn
-4. Liều cá nhân hóa — không có liều "chuẩn" cho tất cả, bác sĩ chỉnh liều cho từng người
-5. Chú ý tác dụng phụ — báo sớm để điều chỉnh kịp thời
-
-Breakthrough pain (đau đột phá — đau bùng phát):
-Là đau bùng phát đột ngột dù đã dùng thuốc nền đúng giờ. Cần liều cứu (rescue dose) riêng theo y lệnh. Nếu cần rescue dose hơn 3 lần trong 1 ngày: báo bác sĩ khoa A20d để điều chỉnh liều nền.
-`;
-
-// ════════════════════════════════════════════════════════════════════════════
-// SYSTEM PROMPT
-// ════════════════════════════════════════════════════════════════════════════
-function buildSystemPrompt() {
-  return `Bạn là trợ lý thông tin opioid chuyên biệt của Khoa Chăm Sóc Giảm Nhẹ (A20d), Viện Ung Bướu & Y học Hạt Nhân, Bệnh viện Quân y 175, TP.HCM.
-
-Nội dung được xây dựng và kiểm duyệt bởi bác sĩ chuyên khoa Ung bướu & Chăm sóc Giảm nhẹ, Khoa A20d, BV Quân y 175.
-
-════════════════════════
-ĐỐI TƯỢNG VÀ GIỌNG ĐIỆU
-════════════════════════
-
-Bạn đang nói chuyện với bệnh nhân ung thư hoặc thân nhân đang chăm sóc họ — thường lo lắng, có thể hỏi lúc đêm khuya, ít quen thuật ngữ y tế.
-
-Khi nhận câu hỏi, xác định đối tượng:
-- Nếu là bệnh nhân: ấm áp, đồng cảm, khuyến khích
-- Nếu là thân nhân: thêm "điều này có nghĩa gì cho người bạn đang chăm sóc" và nhắc khi nào cần liên hệ khoa
-- Nếu không rõ: mặc định là thân nhân đang lo lắng
-
-════════════════════════
-PHONG CÁCH TRẢ LỜI
-════════════════════════
-
-1. Tiếng Việt đơn giản, câu ngắn, ấm áp. Tối đa 5 câu cho câu đơn giản, 8 câu cho câu phức tạp.
-2. KHÔNG dùng markdown: không **, không ##, không ---, không gạch đầu dòng bằng dấu trừ.
-3. Liệt kê bằng câu tự nhiên: "Thuốc có thể gây táo bón, buồn nôn và buồn ngủ."
-4. Với lo lắng cảm xúc: bắt đầu bằng xác nhận cảm xúc trước ("Nỗi lo này rất phổ biến và hoàn toàn dễ hiểu..."), rồi mới giải thích.
-5. Kết thúc bằng 1 câu hành động cụ thể hoặc nhắc liên hệ khoa khi cần.
-6. Tối đa 1 câu hỏi làm rõ mỗi lần trả lời nếu cần.
-
-════════════════════════
-PHẠM VI
-════════════════════════
-
-ĐƯỢC PHÉP: Giải thích tác dụng, tác dụng phụ, cách dùng đúng y lệnh có sẵn, lo lắng về nghiện/pháp lý/tuổi thọ, xử trí tác dụng phụ nhẹ, quy trình lãnh thuốc tại PK04, nguyên tắc WHO Pain Ladder, cung cấp link tải biểu mẫu khi được hỏi.
-
-KHI BỆNH NHÂN/THÂN NHÂN HỎI VỀ BIỂU MẪU HOẶC GIẤY TỜ CẦN TẢI:
-Nhận diện các câu hỏi dạng: "mẫu đơn", "đơn đề nghị", "giấy xác nhận", "tải mẫu", "download", "biểu mẫu", "BM-03", "form".
-Trả lời bao gồm: tên biểu mẫu, mục đích, link tải trực tiếp (dạng có thể click), hướng dẫn sử dụng ngắn gọn.
-Định dạng link: viết rõ "Tải tại đây: [URL]" để người dùng dễ nhận ra và click.
-
-KHÔNG ĐƯỢC: Đề xuất liều cụ thể, thay đổi y lệnh, kê đơn, chẩn đoán, đánh giá tiên lượng.
-
-Câu hỏi về liều → nhắc liên hệ khoa A20d: 0828 204 175.
-
-════════════════════════
-BÁO NGAY KHOA KHI CÓ
-════════════════════════
-
-Nhắc liên hệ 0828 204 175 ngay khi: thở chậm hoặc khó thở tăng sau dùng thuốc, không thể tỉnh dậy, lú lẫn nặng, đau không giảm dù uống thuốc đúng giờ, cần rescue dose hơn 3 lần trong ngày, không uống được thuốc do nôn ói nhiều, bất kỳ triệu chứng nào khiến gia đình lo lắng.
-
-════════════════════════
-KIẾN THỨC CHUYÊN BIỆT
-════════════════════════
-
-${DRUG_FORMULARY}
-
-${DISPENSING_PROCESS}
-
-${FORMS_INFO}
-
-${CULTURAL_CONCERNS}
-
-${PATIENT_JOURNEY}
-
-${WHO_PRINCIPLES}`;
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// KV HELPERS
-// ════════════════════════════════════════════════════════════════════════════
-async function kvIncrement(kv, key) {
-  try {
-    const val = await kv.get(key);
-    await kv.put(key, String((parseInt(val) || 0) + 1));
-  } catch(e) { console.error("KV increment error:", e.message); }
-}
-
-async function logQuestion(kv, question) {
-  try {
-    const raw  = await kv.get("recent_questions");
-    const list = raw ? JSON.parse(raw) : [];
-    list.unshift({ q: question.slice(0, 120), ts: Date.now() });
-    if (list.length > 200) list.splice(200);
-    await kv.put("recent_questions", JSON.stringify(list));
-  } catch(e) { console.error("KV log error:", e.message); }
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// DASHBOARD
-// ════════════════════════════════════════════════════════════════════════════
-async function renderDashboard(kv) {
-  const [totalRaw, likeRaw, dislikeRaw, recentRaw] = await Promise.all([
-    kv.get("total_questions"), kv.get("total_likes"),
-    kv.get("total_dislikes"),  kv.get("recent_questions"),
-  ]);
-  const total  = parseInt(totalRaw)    || 0;
-  const likes  = parseInt(likeRaw)    || 0;
-  const dis    = parseInt(dislikeRaw) || 0;
-  const fb     = likes + dis;
-  const pct    = fb > 0 ? Math.round(likes/fb*100) : null;
-  const recent = recentRaw ? JSON.parse(recentRaw) : [];
-  const freq   = {};
-  recent.forEach(r => { freq[r.q] = (freq[r.q]||0)+1; });
-  const top10  = Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,10);
-  const esc    = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  const topRows    = top10.map(([q,c])=>`<tr><td>${esc(q)}</td><td class="num">${c}</td></tr>`).join("")||`<tr><td colspan="2" class="empty">Chưa có dữ liệu</td></tr>`;
-  const recentRows = recent.slice(0,20).map(r=>{
-    const t=new Date(r.ts).toLocaleString("vi-VN",{timeZone:"Asia/Ho_Chi_Minh"});
-    return `<tr><td>${t}</td><td>${esc(r.q)}</td></tr>`;
-  }).join("")||`<tr><td colspan="2" class="empty">Chưa có dữ liệu</td></tr>`;
-
-  return `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Dashboard — Chatbot Opioid A20d</title>
-<style>
-body{font-family:Segoe UI,Arial,sans-serif;background:#f0f4f7;color:#2c3e50;margin:0;padding:20px}
-h1{color:#1a5f7a;font-size:1.3rem;margin-bottom:4px}.sub{color:#6b7f8e;font-size:.82rem;margin-bottom:20px}
-.cards{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:24px}
-.card{background:#fff;border-radius:12px;padding:18px 22px;flex:1;min-width:130px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
-.card .label{font-size:.72rem;color:#6b7f8e;text-transform:uppercase;letter-spacing:.05em}
-.card .value{font-size:2rem;font-weight:700;color:#1a5f7a;margin-top:4px}
-.card.green .value{color:#2e9e6b}.card.red .value{color:#c0392b}
-table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06);margin-bottom:24px}
-th{background:#1a5f7a;color:#fff;padding:10px 14px;text-align:left;font-size:.82rem}
-td{padding:9px 14px;font-size:.84rem;border-bottom:1px solid #edf0f3}
-tr:last-child td{border-bottom:none}tr:hover td{background:#f5f7fa}
-.num{text-align:center;font-weight:700;color:#1a5f7a;width:60px}.empty{color:#aaa;text-align:center;padding:20px}
-h2{font-size:1rem;color:#1a5f7a;margin:0 0 10px}
-.btn{background:#1a5f7a;color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:.82rem;margin-bottom:20px}
-.warn{background:#fff8e1;border:1px solid #f0c040;border-radius:8px;padding:10px 14px;font-size:.78rem;color:#7a5c00;margin-bottom:16px}
-</style></head><body>
-<h1>📊 Dashboard — Chatbot Opioid A20d</h1>
-<div class="sub">Khoa CSGN, Viện UB&YHHN, BV Quân y 175 • Dữ liệu realtime</div>
-<div class="warn">⚠️ Chỉ dành cho nhân viên khoa. Không chia sẻ URL ra ngoài.</div>
-<button class="btn" onclick="location.reload()">🔄 Làm mới</button>
-<div class="cards">
-  <div class="card"><div class="label">Tổng câu hỏi</div><div class="value">${total}</div></div>
-  <div class="card green"><div class="label">👍 Hài lòng</div><div class="value">${likes}</div></div>
-  <div class="card red"><div class="label">👎 Chưa hài lòng</div><div class="value">${dis}</div></div>
-  <div class="card"><div class="label">Tỷ lệ hài lòng</div><div class="value">${pct!==null?pct+"%":"—"}</div></div>
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Hỏi đáp thuốc giảm đau — Khoa CSGN BV Quân y 175</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --primary:    #1a5f7a;
+      --primary-lt: #e8f4f8;
+      --primary-dk: #134a60;
+      --accent:     #2e9e6b;
+      --warn:       #c0392b;
+      --bg:         #f0f4f7;
+      --white:      #ffffff;
+      --text:       #2c3e50;
+      --text-lt:    #6b7f8e;
+      --border:     #dde3e9;
+      --font:       'Segoe UI', Arial, sans-serif;
+      --radius:     16px;
+    }
+    html, body { height:100%; font-family:var(--font); background:var(--bg); color:var(--text); font-size:16px; line-height:1.6; }
+    .app { display:flex; flex-direction:column; height:100dvh; max-width:680px; margin:0 auto; background:var(--white); box-shadow:0 0 40px rgba(0,0,0,.10); }
+
+    /* Header */
+    header { background:linear-gradient(135deg,var(--primary) 0%,var(--primary-dk) 100%); color:#fff; padding:14px 18px; display:flex; align-items:center; gap:12px; flex-shrink:0; }
+    .header-icon { width:46px; height:46px; background:rgba(255,255,255,.18); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0; }
+    .header-text h1 { font-size:1rem; font-weight:700; line-height:1.3; }
+    .header-text p  { font-size:.75rem; opacity:.8; margin-top:2px; }
+
+    /* Disclaimer */
+    .disclaimer { background:#fffbeb; border-bottom:2px solid #f0c040; padding:9px 16px; font-size:.78rem; color:#7a5c00; display:flex; gap:8px; align-items:flex-start; flex-shrink:0; }
+
+    /* Chat area */
+    .chat-area { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:14px; scroll-behavior:smooth; }
+
+    /* Welcome */
+    .welcome-card { background:var(--primary-lt); border:1px solid #b8d9e8; border-radius:var(--radius); padding:16px; font-size:.88rem; }
+    .welcome-card h2 { color:var(--primary); font-size:.98rem; margin-bottom:8px; }
+    .welcome-card p  { color:var(--text-lt); margin-bottom:12px; font-size:.82rem; }
+    .quick-wrap { display:flex; flex-wrap:wrap; gap:8px; }
+    .quick-btn { background:var(--white); border:1.5px solid var(--primary); color:var(--primary); border-radius:20px; padding:6px 14px; font-size:.8rem; cursor:pointer; transition:all .18s; font-family:var(--font); }
+    .quick-btn:hover, .quick-btn:active { background:var(--primary); color:#fff; }
+
+    /* Forms section */
+    .forms-section { margin-top:14px; padding-top:12px; border-top:1px solid #c2dce8; }
+    .forms-section h3 { font-size:.82rem; color:var(--text-lt); margin-bottom:8px; text-transform:uppercase; letter-spacing:.05em; }
+    .form-btn {
+      display:inline-flex; align-items:center; gap:6px;
+      background:var(--primary); color:#fff;
+      border:none; border-radius:10px; padding:8px 14px;
+      font-size:.82rem; font-weight:600; cursor:pointer;
+      text-decoration:none; font-family:var(--font);
+      transition:background .18s;
+    }
+    .form-btn:hover { background:var(--primary-dk); }
+    .form-btn .form-icon { font-size:1rem; }
+    .form-hint { font-size:.74rem; color:var(--text-lt); margin-top:6px; }
+
+    /* Messages */
+    .message { display:flex; align-items:flex-end; gap:8px; animation:fadeUp .22s ease; }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .message.user { flex-direction:row-reverse; }
+    .avatar { width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }
+    .message.bot  .avatar { background:var(--primary-lt); }
+    .message.user .avatar { background:#e8f5e9; }
+
+    .msg-wrap { display:flex; flex-direction:column; gap:6px; max-width:82%; }
+    .message.user .msg-wrap { align-items:flex-end; }
+
+    .bubble { padding:11px 15px; border-radius:var(--radius); font-size:.91rem; line-height:1.7; word-break:break-word; }
+    .message.bot  .bubble { background:var(--primary-lt); border:1px solid #c2dce8; border-bottom-left-radius:4px; color:var(--text); }
+    .message.user .bubble { background:var(--primary); color:#fff; border-bottom-right-radius:4px; }
+    .bubble p { margin:0; }
+    .bubble p + p { margin-top:8px; }
+    .bubble a { color:var(--primary); font-weight:600; text-decoration:none; }
+    .message.user .bubble a { color:#a8d8f0; }
+
+    /* Feedback buttons */
+    .feedback-row { display:flex; gap:8px; align-items:center; }
+    .fb-btn {
+      background:transparent; border:1.5px solid var(--border);
+      border-radius:20px; padding:4px 12px; font-size:.8rem;
+      cursor:pointer; color:var(--text-lt); display:flex; align-items:center; gap:4px;
+      transition:all .18s; font-family:var(--font);
+    }
+    .fb-btn:hover { border-color:var(--primary); color:var(--primary); background:var(--primary-lt); }
+    .fb-btn.liked    { background:#e8f5e9; border-color:var(--accent); color:var(--accent); }
+    .fb-btn.disliked { background:#fdecea; border-color:var(--warn); color:var(--warn); }
+    .fb-btn:disabled { opacity:.5; cursor:default; }
+    .fb-label { font-size:.75rem; color:var(--text-lt); }
+
+    /* Typing */
+    .typing .bubble { display:flex; align-items:center; gap:5px; padding:14px 18px; }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--primary); animation:bounce .9s infinite; }
+    .dot:nth-child(2){animation-delay:.2s} .dot:nth-child(3){animation-delay:.4s}
+    @keyframes bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-6px)} }
+
+    /* Emergency */
+    .emergency-badge { background:#fdecea; border:1.5px solid var(--warn); border-radius:10px; padding:10px 14px; font-size:.82rem; color:var(--warn); display:flex; gap:8px; align-items:center; }
+    .emergency-badge a { color:var(--warn); font-weight:700; }
+
+    /* Input */
+    .input-area { padding:11px 14px; border-top:1px solid var(--border); background:var(--white); flex-shrink:0; }
+    .input-row { display:flex; gap:8px; align-items:flex-end; }
+    textarea { flex:1; resize:none; border:1.5px solid var(--border); border-radius:22px; padding:10px 16px; font-size:.93rem; font-family:var(--font); outline:none; max-height:120px; min-height:44px; line-height:1.5; color:var(--text); transition:border-color .2s; }
+    textarea:focus { border-color:var(--primary); }
+    textarea::placeholder { color:var(--text-lt); }
+    .send-btn { width:44px; height:44px; border-radius:50%; background:var(--primary); color:#fff; border:none; cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; transition:background .2s,transform .1s; }
+    .send-btn:hover  { background:var(--primary-dk); }
+    .send-btn:active { transform:scale(.93); }
+    .send-btn:disabled { background:#b0c4ce; cursor:not-allowed; }
+    .input-hint { font-size:.7rem; color:var(--text-lt); margin-top:5px; text-align:center; }
+
+    /* Footer */
+    footer { background:var(--bg); border-top:1px solid var(--border); padding:8px 16px; text-align:center; font-size:.72rem; color:var(--text-lt); flex-shrink:0; }
+    footer a { color:var(--primary); text-decoration:none; font-weight:600; }
+
+    @media(max-width:480px) { .bubble{font-size:.87rem} .quick-btn{font-size:.76rem} .msg-wrap{max-width:90%} }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="header-icon">💊</div>
+    <div class="header-text">
+      <h1>Hỏi đáp thuốc giảm đau</h1>
+      <p>Khoa CSGN (A20d) — BV Quân y 175</p>
+    </div>
+  </header>
+
+  <div class="disclaimer">
+    <span>⚠️</span>
+    <span>Trợ lý này chỉ cung cấp <strong>thông tin chung</strong>. Không thay thế tư vấn của bác sĩ/điều dưỡng. Về liều dùng, xin liên hệ trực tiếp khoa.</span>
+  </div>
+
+  <div class="chat-area" id="chatArea">
+    <div class="welcome-card" id="welcomeCard">
+      <h2>Xin chào! Tôi có thể giúp gì cho bạn? 👋</h2>
+      <p>Hỏi về bất kỳ thuốc giảm đau nào bạn đang dùng tại khoa — tôi sẽ giải thích rõ ràng.</p>
+      <div class="quick-wrap">
+        <button class="quick-btn" onclick="sendQuick('Morphine có gây nghiện không?')">Morphine có gây nghiện không?</button>
+        <button class="quick-btn" onclick="sendQuick('Bị táo bón do thuốc thì làm sao?')">Táo bón do thuốc thì làm sao?</button>
+        <button class="quick-btn" onclick="sendQuick('Cách dán miếng Fentanyl đúng cách như thế nào?')">Cách dán Fentanyl đúng?</button>
+        <button class="quick-btn" onclick="sendQuick('Viên Oxycodone có được nghiền ra không?')">Oxycodone có nghiền được không?</button>
+        <button class="quick-btn" onclick="sendQuick('Buồn nôn khi uống morphine phải làm gì?')">Buồn nôn khi uống morphine?</button>
+      </div>
+
+      <div class="forms-section">
+        <h3>📄 Biểu mẫu có thể tải về</h3>
+        <a class="form-btn"
+           href="https://lethuong201193.github.io/opioid-chatbot/BM-03-Don-de-nghi-xac-nhan.docx"
+           download="BM-03-Don-de-nghi-xac-nhan.docx">
+          <span class="form-icon">⬇️</span>
+          BM-03 — Đơn đề nghị xác nhận tiếp tục điều trị
+        </a>
+        <p class="form-hint">Tải về → In → Điền tay → Mang đến Trạm y tế phường/xã xin xác nhận → Mang đến Khoa CSGN A20d</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="input-area">
+    <div class="input-row">
+      <textarea id="userInput" placeholder="Nhập câu hỏi của bạn…" rows="1"
+        onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()" title="Gửi">➤</button>
+    </div>
+    <div class="input-hint">Nhấn Enter để gửi &nbsp;•&nbsp; Shift+Enter xuống dòng</div>
+  </div>
+
+  <footer>
+    Thông tin tham khảo — không thay thế tư vấn y tế &nbsp;|&nbsp;
+    <a href="tel:0828204175">☎ 0828 204 175</a> &nbsp;|&nbsp;
+    Zalo: <strong>Chăm sóc giảm nhẹ</strong>
+  </footer>
 </div>
-<h2>🔝 Top 10 câu hỏi thường gặp</h2>
-<table><tr><th>Câu hỏi</th><th style="text-align:center">Lần</th></tr>${topRows}</table>
-<h2>🕐 20 câu hỏi gần nhất</h2>
-<table><tr><th>Thời gian</th><th>Nội dung</th></tr>${recentRows}</table>
-</body></html>`;
-}
 
-// ════════════════════════════════════════════════════════════════════════════
-// MAIN HANDLER
-// ════════════════════════════════════════════════════════════════════════════
-export default {
-  async fetch(request, env) {
-    const url    = new URL(request.url);
-    const origin = request.headers.get("Origin") || "";
+<script>
+  const WORKER_URL = "https://shrill-mud-46a8.lethuong201193.workers.dev";
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) });
-    }
+  const chatArea    = document.getElementById("chatArea");
+  const userInput   = document.getElementById("userInput");
+  const sendBtn     = document.getElementById("sendBtn");
+  const welcomeCard = document.getElementById("welcomeCard");
 
-    if (request.method === "GET" && url.pathname === "/stats") {
-      if (url.searchParams.get("key") !== env.STATS_KEY)
-        return new Response("Unauthorized", { status: 401 });
-      return new Response(await renderDashboard(env.KV),
-        { headers: { "Content-Type": "text/html;charset=UTF-8" } });
-    }
+  let messages  = [];
+  let isLoading = false;
 
-    if (request.method !== "POST")
-      return new Response("Not found", { status: 404 });
+  function sendQuick(text) { userInput.value = text; sendMessage(); }
+  function autoResize(el) { el.style.height="auto"; el.style.height=Math.min(el.scrollHeight,120)+"px"; }
+  function handleKey(e)   { if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage();} }
 
-    if (url.pathname === "/feedback") {
-      let body; try { body = await request.json(); } catch { return new Response("{}",{status:400}); }
-      if (body.vote === "like")    await kvIncrement(env.KV, "total_likes");
-      if (body.vote === "dislike") await kvIncrement(env.KV, "total_dislikes");
-      return new Response(JSON.stringify({ok:true}),
-        { headers: {"Content-Type":"application/json",...corsHeaders(origin)} });
-    }
-
-    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
-    if (!checkRateLimit(ip))
-      return new Response(JSON.stringify({error:"Bạn đã gửi quá nhiều câu hỏi. Thử lại sau 1 giờ."}),
-        { status:429, headers:{"Content-Type":"application/json",...corsHeaders(origin)} });
-
-    let body; try { body = await request.json(); } catch {
-      return new Response(JSON.stringify({error:"Invalid JSON"}),{status:400});
-    }
-    const { messages } = body;
-    if (!Array.isArray(messages)||messages.length===0)
-      return new Response(JSON.stringify({error:"Thiếu messages"}),{status:400});
-
-    const lastUser = [...messages].reverse().find(m=>m.role==="user");
-    if (lastUser && env.KV) {
-      env.KV.get("total_questions").then(v=>
-        env.KV.put("total_questions",String((parseInt(v)||0)+1)));
-      logQuestion(env.KV, lastUser.content);
-    }
-
-    try {
-      const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type":      "application/json",
-          "x-api-key":         env.ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01"
-        },
-        body: JSON.stringify({
-          model:      "claude-haiku-4-5",
-          max_tokens: 900,
-          system:     buildSystemPrompt(),
-          messages:   messages.slice(-10)
-        })
-      });
-
-      const txt = await apiRes.text();
-      if (!apiRes.ok) {
-        console.error("Anthropic error:", txt);
-        return new Response(JSON.stringify({error:"Lỗi kết nối AI. Vui lòng thử lại sau."}),
-          { status:502, headers:{"Content-Type":"application/json",...corsHeaders(origin)} });
-      }
-
-      const data  = JSON.parse(txt);
-      const reply = data.content.filter(b=>b.type==="text").map(b=>b.text).join("\n");
-      return new Response(JSON.stringify({reply}),
-        { status:200, headers:{"Content-Type":"application/json",...corsHeaders(origin)} });
-
-    } catch(err) {
-      console.error("Worker error:", err.message);
-      return new Response(JSON.stringify({error:"Lỗi hệ thống: "+err.message}),
-        { status:500, headers:{"Content-Type":"application/json",...corsHeaders(origin)} });
-    }
+  function cleanText(text) {
+    return text
+      .replace(/#{1,4}\s*/g,'')
+      .replace(/\*{1,3}(.*?)\*{1,3}/g,'$1')
+      .replace(/_{1,2}(.*?)_{1,2}/g,'$1')
+      .replace(/^[-–•]\s+/gm,'• ')
+      .replace(/^---+$/gm,'')
+      .replace(/\n{3,}/g,'\n\n')
+      .trim();
   }
-};
+
+  function linkify(text) {
+    // Số điện thoại → tel link
+    text = text.replace(/(\b0\d{9}\b)/g, '<a href="tel:$1">$1</a>');
+    // URL .docx → nút tải xuống
+    text = text.replace(
+      /(https?:\/\/[^\s<]+\.docx)/g,
+      '<a href="$1" download style="display:inline-flex;align-items:center;gap:5px;background:#1C7293;color:#fff;padding:6px 14px;border-radius:8px;text-decoration:none;font-size:.85rem;font-weight:600;margin:6px 0;">📄 Tải biểu mẫu (.docx)</a>'
+    );
+    // URL thường → hyperlink
+    text = text.replace(
+      /(https?:\/\/(?:[^\s<]+)(?<!\.docx))/g,
+      '<a href="$1" target="_blank" rel="noopener" style="color:#1C7293;text-decoration:underline;word-break:break-all;">$1</a>'
+    );
+    return text;
+  }
+
+  function renderText(text) {
+    const clean = linkify(cleanText(text));
+    return clean.split(/\n{2,}/)
+      .map(p=>p.replace(/\n/g,'<br>').trim())
+      .filter(p=>p)
+      .map(p=>`<p>${p}</p>`)
+      .join('');
+  }
+
+  function escapeHtml(t) {
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Gửi feedback lên Worker
+  async function sendFeedback(vote, likeBtn, dislikeBtn) {
+    likeBtn.disabled = true;
+    dislikeBtn.disabled = true;
+    if (vote === "like")    likeBtn.classList.add("liked");
+    else dislikeBtn.classList.add("disliked");
+    try {
+      await fetch(WORKER_URL + "/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vote })
+      });
+    } catch(e) { console.warn("Feedback error:", e); }
+  }
+
+  function addMessage(role, text) {
+    const wrapper = document.createElement("div");
+    wrapper.className = `message ${role}`;
+
+    const avatar = `<div class="avatar">${role==="bot"?"🤖":"👤"}</div>`;
+    const html   = role==="bot" ? renderText(text) : `<p>${escapeHtml(text)}</p>`;
+
+    if (role === "bot") {
+      // Thêm feedback buttons cho bot
+      const likeId    = "like-"    + Date.now();
+      const dislikeId = "dislike-" + Date.now();
+      wrapper.innerHTML = `
+        ${avatar}
+        <div class="msg-wrap">
+          <div class="bubble">${html}</div>
+          <div class="feedback-row">
+            <span class="fb-label">Câu trả lời có hữu ích không?</span>
+            <button class="fb-btn" id="${likeId}"    onclick="handleFeedback('like','${likeId}','${dislikeId}')">👍 Có</button>
+            <button class="fb-btn" id="${dislikeId}" onclick="handleFeedback('dislike','${likeId}','${dislikeId}')">👎 Chưa</button>
+          </div>
+        </div>`;
+    } else {
+      wrapper.innerHTML = `${avatar}<div class="msg-wrap"><div class="bubble">${html}</div></div>`;
+    }
+
+    chatArea.appendChild(wrapper);
+    scrollDown();
+  }
+
+  function handleFeedback(vote, likeId, dislikeId) {
+    const likeBtn    = document.getElementById(likeId);
+    const dislikeBtn = document.getElementById(dislikeId);
+    if (!likeBtn || likeBtn.disabled) return;
+    sendFeedback(vote, likeBtn, dislikeBtn);
+  }
+
+  function showTyping() {
+    const div = document.createElement("div");
+    div.className = "message bot typing";
+    div.id = "typingIndicator";
+    div.innerHTML = `<div class="avatar">🤖</div><div class="bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+    chatArea.appendChild(div);
+    scrollDown();
+  }
+  function removeTyping() { document.getElementById("typingIndicator")?.remove(); }
+
+  const emergencyKw = ["khó thở nặng","không tỉnh","bất tỉnh","co giật","môi tím","cấp cứu"];
+  function checkEmergency(t) { return emergencyKw.some(k=>t.toLowerCase().includes(k)); }
+
+  function addEmergencyBadge() {
+    const div = document.createElement("div");
+    div.className = "emergency-badge";
+    div.innerHTML = `🚨 <span>Đây có thể là tình huống khẩn cấp! Gọi ngay <a href="tel:115">115</a> hoặc đến cấp cứu gần nhất.</span>`;
+    chatArea.appendChild(div);
+    scrollDown();
+  }
+
+  async function sendMessage() {
+    if (isLoading) return;
+    const text = userInput.value.trim();
+    if (!text) return;
+    if (welcomeCard) welcomeCard.style.display = "none";
+    addMessage("user", text);
+    messages.push({ role:"user", content:text });
+    userInput.value = "";
+    userInput.style.height = "auto";
+    sendBtn.disabled = true;
+    isLoading = true;
+    if (checkEmergency(text)) addEmergencyBadge();
+    showTyping();
+    try {
+      const res = await fetch(WORKER_URL, {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ messages })
+      });
+      removeTyping();
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}));
+        addMessage("bot", err.error || "Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.");
+      } else {
+        const data  = await res.json();
+        const reply = data.reply || "Xin lỗi, không nhận được phản hồi.";
+        addMessage("bot", reply);
+        messages.push({ role:"assistant", content:reply });
+      }
+    } catch {
+      removeTyping();
+      addMessage("bot","Không thể kết nối. Vui lòng kiểm tra mạng và thử lại.");
+    }
+    sendBtn.disabled = false;
+    isLoading = false;
+    userInput.focus();
+  }
+
+  function scrollDown() { chatArea.scrollTop = chatArea.scrollHeight; }
+</script>
+</body>
+</html>
