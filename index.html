@@ -231,8 +231,8 @@
     return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // Gửi feedback lên Worker
-  async function sendFeedback(vote, likeBtn, dislikeBtn) {
+  // Gửi feedback lên Worker (kèm câu hỏi + câu trả lời để phục vụ huấn luyện)
+  async function sendFeedback(vote, likeBtn, dislikeBtn, question, answer) {
     likeBtn.disabled = true;
     dislikeBtn.disabled = true;
     if (vote === "like")    likeBtn.classList.add("liked");
@@ -241,7 +241,7 @@
       await fetch(WORKER_URL + "/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vote })
+        body: JSON.stringify({ vote, question, answer })
       });
     } catch(e) { console.warn("Feedback error:", e); }
   }
@@ -255,8 +255,8 @@
 
     if (role === "bot") {
       // Thêm feedback buttons cho bot
-      const likeId    = "like-"    + Date.now();
-      const dislikeId = "dislike-" + Date.now();
+      const likeId    = "like-"    + Date.now() + "-" + Math.floor(Math.random()*10000);
+      const dislikeId = "dislike-" + Date.now() + "-" + Math.floor(Math.random()*10000);
       wrapper.innerHTML = `
         ${avatar}
         <div class="msg-wrap">
@@ -267,6 +267,11 @@
             <button class="fb-btn" id="${dislikeId}" onclick="handleFeedback('dislike','${likeId}','${dislikeId}')">👎 Chưa</button>
           </div>
         </div>`;
+      // Lưu câu hỏi (gần nhất của user) + câu trả lời vào dataset để gửi kèm feedback.
+      // Dùng dataset thay vì nhét chuỗi vào onclick để tránh lỗi escape dấu nháy/xuống dòng.
+      const lastUserMsg = [...messages].reverse().find(m => m.role === "user");
+      wrapper.dataset.question = lastUserMsg ? lastUserMsg.content : "";
+      wrapper.dataset.answer   = text;
     } else {
       wrapper.innerHTML = `${avatar}<div class="msg-wrap"><div class="bubble">${html}</div></div>`;
     }
@@ -279,7 +284,10 @@
     const likeBtn    = document.getElementById(likeId);
     const dislikeBtn = document.getElementById(dislikeId);
     if (!likeBtn || likeBtn.disabled) return;
-    sendFeedback(vote, likeBtn, dislikeBtn);
+    const wrapper  = likeBtn.closest(".message");
+    const question = wrapper?.dataset.question || "";
+    const answer   = wrapper?.dataset.answer   || "";
+    sendFeedback(vote, likeBtn, dislikeBtn, question, answer);
   }
 
   function showTyping() {
