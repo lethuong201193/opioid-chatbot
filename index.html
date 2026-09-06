@@ -370,31 +370,56 @@
 
   // Gọi API chat + xử lý kết quả — dùng chung cho gửi lần đầu và bấm "Gửi lại".
   // messages lúc gọi hàm này luôn kết thúc bằng đúng 1 tin nhắn "user" chưa được trả lời.
+  // Tự động thử lại NGẦM khi lỗi — người dùng chỉ thấy biểu tượng "đang gõ..." liên
+  // tục, không thấy thông báo lỗi cho các trục trặc chưa chắc đã kéo dài. Có GIỚI HẠN
+  // số lần (không thử vô hạn): nếu cả 3 lần đều thất bại (tổng cộng tối đa ~90 giây),
+  // vẫn phải hiện lỗi thật + nút "Gửi lại" — để người dùng luôn có đường thoát (số
+  // điện thoại khoa) thay vì treo màn hình vô thời hạn khi gặp đợt lỗi thật sự dài.
+  // Lần 2 cách lần 1: 30 giây. Lần 3 cách lần 2: 60 giây.
+  const AUTO_RETRY_DELAYS_MS = [30000, 60000];
+
   async function callChatAPI() {
     sendBtn.disabled = true;
     isLoading = true;
     showTyping();
-    try {
-      const res = await fetch(WORKER_URL, {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ messages })
-      });
-      removeTyping();
-      if (!res.ok) {
-        const err = await res.json().catch(()=>({}));
-        addErrorMessage(err.error || "Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.");
-      } else {
-        const data  = await res.json();
-        const reply = data.reply || "Xin lỗi, không nhận được phản hồi.";
-        addMessage("bot", reply);
-        messages.push({ role:"assistant", content:reply });
-        saveHistory();
+
+    let lastErrorMsg = "Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.";
+    let succeeded = false;
+    const totalAttempts = AUTO_RETRY_DELAYS_MS.length + 1;
+
+    for (let attempt = 0; attempt < totalAttempts; attempt++) {
+      try {
+        const res = await fetch(WORKER_URL, {
+          method: "POST",
+          headers: { "Content-Type":"application/json" },
+          body: JSON.stringify({ messages })
+        });
+        if (res.ok) {
+          const data  = await res.json();
+          const reply = data.reply || "Xin lỗi, không nhận được phản hồi.";
+          removeTyping();
+          addMessage("bot", reply);
+          messages.push({ role:"assistant", content:reply });
+          saveHistory();
+          succeeded = true;
+          break;
+        } else {
+          const err = await res.json().catch(()=>({}));
+          lastErrorMsg = err.error || lastErrorMsg;
+        }
+      } catch {
+        lastErrorMsg = "Không thể kết nối. Vui lòng kiểm tra mạng và thử lại.";
       }
-    } catch {
-      removeTyping();
-      addErrorMessage("Không thể kết nối. Vui lòng kiểm tra mạng và thử lại.");
+      if (attempt < AUTO_RETRY_DELAYS_MS.length) {
+        await new Promise(r => setTimeout(r, AUTO_RETRY_DELAYS_MS[attempt]));
+      }
     }
+
+    if (!succeeded) {
+      removeTyping();
+      addErrorMessage(lastErrorMsg);
+    }
+
     sendBtn.disabled = false;
     isLoading = false;
   }
