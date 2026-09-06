@@ -368,19 +368,11 @@
     scrollDown();
   }
 
-  async function sendMessage() {
-    if (isLoading) return;
-    const text = userInput.value.trim();
-    if (!text) return;
-    if (welcomeCard) welcomeCard.style.display = "none";
-    addMessage("user", text);
-    messages.push({ role:"user", content:text });
-    saveHistory();
-    userInput.value = "";
-    userInput.style.height = "auto";
+  // Gọi API chat + xử lý kết quả — dùng chung cho gửi lần đầu và bấm "Gửi lại".
+  // messages lúc gọi hàm này luôn kết thúc bằng đúng 1 tin nhắn "user" chưa được trả lời.
+  async function callChatAPI() {
     sendBtn.disabled = true;
     isLoading = true;
-    if (checkEmergency(text)) addEmergencyBadge();
     showTyping();
     try {
       const res = await fetch(WORKER_URL, {
@@ -391,7 +383,7 @@
       removeTyping();
       if (!res.ok) {
         const err = await res.json().catch(()=>({}));
-        addMessage("bot", err.error || "Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.");
+        addErrorMessage(err.error || "Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.");
       } else {
         const data  = await res.json();
         const reply = data.reply || "Xin lỗi, không nhận được phản hồi.";
@@ -401,11 +393,50 @@
       }
     } catch {
       removeTyping();
-      addMessage("bot","Không thể kết nối. Vui lòng kiểm tra mạng và thử lại.");
+      addErrorMessage("Không thể kết nối. Vui lòng kiểm tra mạng và thử lại.");
     }
     sendBtn.disabled = false;
     isLoading = false;
+  }
+
+  async function sendMessage() {
+    if (isLoading) return;
+    const text = userInput.value.trim();
+    if (!text) return;
+    if (welcomeCard) welcomeCard.style.display = "none";
+    addMessage("user", text);
+    messages.push({ role:"user", content:text });
+    saveHistory();
+    userInput.value = "";
+    userInput.style.height = "auto";
+    if (checkEmergency(text)) addEmergencyBadge();
+    await callChatAPI();
     userInput.focus();
+  }
+
+  // Bấm "Gửi lại" trên tin nhắn lỗi — KHÔNG thêm bubble user mới, KHÔNG push thêm vào
+  // messages (đã có sẵn 1 tin nhắn user chưa trả lời từ lần gửi thất bại trước đó).
+  // Quan trọng: tránh 2 tin nhắn "user" liên tiếp trong messages, vì Anthropic API
+  // yêu cầu vai trò user/assistant phải xen kẽ đúng thứ tự.
+  async function retryLastMessage(btn) {
+    if (isLoading) return;
+    btn.disabled = true;
+    await callChatAPI();
+  }
+
+  function addErrorMessage(text) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "message bot";
+    wrapper.innerHTML = `
+      <div class="avatar">🤖</div>
+      <div class="msg-wrap">
+        <div class="bubble">${renderText(text)}</div>
+        <div class="feedback-row">
+          <button class="fb-btn" onclick="retryLastMessage(this)">🔄 Gửi lại câu hỏi này</button>
+        </div>
+      </div>`;
+    chatArea.appendChild(wrapper);
+    scrollDown();
   }
 
   function scrollDown() { chatArea.scrollTop = chatArea.scrollHeight; }
