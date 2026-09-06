@@ -28,8 +28,9 @@
     .header-icon { width:46px; height:46px; background:rgba(255,255,255,.18); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:22px; flex-shrink:0; }
     .header-text h1 { font-size:1rem; font-weight:700; line-height:1.3; }
     .header-text p  { font-size:.75rem; opacity:.8; margin-top:2px; }
-    .clear-btn { margin-left:auto; background:rgba(255,255,255,.15); border:none; color:#fff; width:38px; height:38px; border-radius:10px; font-size:16px; cursor:pointer; flex-shrink:0; transition:background .18s; }
+    .clear-btn { margin-left:auto; background:rgba(255,255,255,.15); border:none; color:#fff; width:38px; height:38px; border-radius:10px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:background .18s, transform .12s; }
     .clear-btn:hover { background:rgba(255,255,255,.28); }
+    .clear-btn:active { transform:scale(.92); }
 
     /* Disclaimer */
     .disclaimer { background:#fffbeb; border-bottom:2px solid #f0c040; padding:9px 16px; font-size:.78rem; color:#7a5c00; display:flex; gap:8px; align-items:flex-start; flex-shrink:0; }
@@ -133,7 +134,14 @@
       <h1>Hỏi đáp thuốc giảm đau</h1>
       <p>Khoa CSGN (A20d) — BV Quân y 175</p>
     </div>
-    <button class="clear-btn" id="clearBtn" onclick="clearConversation()" title="Xóa cuộc trò chuyện">🗑️</button>
+    <button class="clear-btn" id="clearBtn" onclick="clearConversation()" title="Xóa cuộc trò chuyện">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        <line x1="10" y1="11" x2="10" y2="17"></line>
+        <line x1="14" y1="11" x2="14" y2="17"></line>
+      </svg>
+    </button>
   </header>
 
   <div class="disclaimer">
